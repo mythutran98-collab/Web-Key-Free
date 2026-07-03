@@ -35,35 +35,63 @@ function cleanExpiredKeys() {
     if (changed) writeKeys(keys);
 }
 
-// API 1: Tạo Key ngẫu nhiên sau khi vượt Link4M thành công
-// Bạn hãy cấu hình Link4M chuyển hướng về: http://your-domain:3000/generate-key?status=success
+// API 1: Xử lý Endpoint trung gian nhận diện HWID trước khi chuyển sang Link4M
+// Người dùng từ game sẽ mở link: http://your-domain/getkey?hwid=MÃ_THIẾT_BỊ
+app.get('/getkey', (req, res) => {
+    const hwid = req.query.hwid;
+    if (!hwid) {
+        return res.status(400).send('<h1>Lỗi: Thiếu tham số HWID hợp lệ!</h1>');
+    }
+    
+    // API v2 Link4M của bạn
+    const LINK4M_API = "https://link4m.com/api-shorten/v2?api=6a468a248ac8462dd2051fc3&url=";
+    
+    // URL đích sau khi người dùng vượt link thành công (Truyền kèm HWID để xử lý khóa tại bước cuối)
+    // Thay thế địa chỉ 'https://rug-drawing-antivirus-cumulative.trycloudflare.com' bằng URL tunnel hiện tại của bạn
+    const destinationUrl = `https://rug-drawing-antivirus-cumulative.trycloudflare.com/generate-key?status=success&hwid=${encodeURIComponent(hwid)}`;
+    
+    // Chuyển hướng người chơi trực tiếp sang trang vượt link Link4M
+    res.redirect(LINK4M_API + encodeURIComponent(destinationUrl));
+});
+
+// API 2: Tạo Key ngẫu nhiên sau khi vượt Link4M thành công
 app.get('/generate-key', (req, res) => {
     cleanExpiredKeys();
     const status = req.query.status;
+    const hwid = req.query.hwid;
     
-    // Bảo mật: Kiểm tra xem có đúng từ link4m chuyển hướng qua không
-    if (status !== 'success') {
-        return res.status(403).send('<h1>Lỗi: Bạn chưa vượt link xác thực hợp lệ!</h1>');
+    // Bảo mật nâng cao: Kiểm tra trạng thái và sự hiện diện của phần cứng thiết bị
+    if (status !== 'success' || !hwid) {
+        return res.status(403).send('<h1>Lỗi: Bạn chưa vượt link xác thực hợp lệ hoặc thiếu thông tin thiết bị!</h1>');
     }
 
     let keys = readKeys();
     let newKey;
     
-    // Vòng lặp đảm bảo không tạo key trùng với các key đang hoạt động
-    do {
-        newKey = "VND_" + crypto.randomBytes(6).toString('hex').toUpperCase();
-    } while (keys[newKey]);
+    // Kiểm tra xem thiết bị này đã lấy key trong 8 tiếng gần đây chưa để trả lại key cũ, tránh spam sinh file rác
+    for (let k in keys) {
+        if (keys[k].hwid === hwid && Date.now() < keys[k].expiresAt) {
+            newKey = k;
+            break;
+        }
+    }
 
-    const duration = 8 * 60 * 60 * 1000; // 8 Tiếng tính bằng mili-giây
-    keys[newKey] = {
-        hwid: null,
-        createdAt: Date.now(),
-        expiresAt: Date.now() + duration
-    };
-    
-    writeKeys(keys);
+    // Nếu chưa có key hợp lệ hoặc đã hết hạn, tạo một key mới hoàn toàn
+    if (!newKey) {
+        do {
+            newKey = "VND_" + crypto.randomBytes(6).toString('hex').toUpperCase();
+        } while (keys[newKey]);
 
-    // Trả về giao diện Web đẹp mắt hiển thị Key vừa tạo
+        const duration = 8 * 60 * 60 * 1000; // Thời hạn hiệu lực: 8 Tiếng
+        keys[newKey] = {
+            hwid: hwid, // Khóa cố định luôn HWID của người chơi tại đây
+            createdAt: Date.now(),
+            expiresAt: Date.now() + duration
+        };
+        writeKeys(keys);
+    }
+
+    // Trả về giao diện Web hiển thị chúc mừng và sao chép Key
     res.send(`
         <!DOCTYPE html>
         <html>
@@ -82,7 +110,7 @@ app.get('/generate-key', (req, res) => {
         <body>
             <div class="card">
                 <h2>LẤY KEY THÀNH CÔNG!</h2>
-                <p>Key có thời hạn sử dụng trong <b>8 giờ</b> và sẽ tự khóa theo HWID thiết bị chạy đầu tiên.</p>
+                <p>Key có thời hạn sử dụng trong <b>8 giờ</b> và đã được kích hoạt cố định cho thiết bị của bạn.</p>
                 <div class="key-box" id="keyText">${newKey}</div>
                 <button onclick="navigator.clipboard.writeText('${newKey}'); alert('Đã sao chép Key!')">SAO CHÉP KEY</button>
             </div>
@@ -91,31 +119,24 @@ app.get('/generate-key', (req, res) => {
     `);
 });
 
-// API 2: Cho Script Roblox gọi để kiểm tra và khóa HWID
+// API 3: Cho Script Roblox gọi để kiểm tra và đối chiếu dữ liệu mạng
 app.post('/api/verify', (req, res) => {
     cleanExpiredKeys();
     const { key, hwid } = req.body;
     let keys = readKeys();
 
     if (!key || !keys[key]) {
-        return res.json({ success: false, message: "Key không tồn tại hoặc đã hết hạn!" });
+        return res.json({ success: false, message: "Key không tồn tại hoặc đã hết hạn sử dụng!" });
     }
 
     let keyData = keys[key];
 
-    // Gán HWID nếu key chưa có thiết bị nào kích hoạt
-    if (!keyData.hwid) {
-        keyData.hwid = hwid;
-        writeKeys(keys);
-        return res.json({ success: true, message: "Kích hoạt thiết bị (HWID) mới thành công!" });
-    }
-
-    // Kiểm tra HWID trùng khớp tránh share key trái phép
+    // Đối chiếu trùng khớp dữ liệu thiết bị đã đăng ký lúc vượt link
     if (keyData.hwid !== hwid) {
-        return res.json({ success: false, message: "Sai thiết bị phần cứng (HWID)! Vui lòng get key mới." });
+        return res.json({ success: false, message: "Sai mã định danh thiết bị phần cứng (HWID)! Hãy thực hiện Get Key trên chính máy này." });
     }
 
-    return res.json({ success: true, message: "Xác thực thành công!" });
+    return res.json({ success: true, message: "Xác thực danh tính thành công!" });
 });
 
 // Giao diện trang chủ (Index)
