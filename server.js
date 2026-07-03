@@ -8,9 +8,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'key.json');
 
-// URL Tunnel Cloudflare hiện tại của bạn
+// Middleware bắt buộc để đọc dữ liệu JSON gửi lên từ Roblox bằng phương thức POST
+app.use(express.json());
+
+// ============================================================================
+// CẤU HÌNH HỆ THỐNG (THAY ĐỔI THEO THÔNG TIN CỦA BẠN)
+// ============================================================================
 const BASE_URL = "https://rug-drawing-antivirus-cumulative.trycloudflare.com";
-// API Token Link4M của bạn
 const LINK4M_TOKEN = "6a468a248ac8462dd2051fc3"; 
 
 // Hàm đọc database từ file JSON
@@ -31,9 +35,9 @@ function writeDatabase(data) {
     fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
-// -------------------------------------------------------------
-// BƯỚC CHUYỂN HƯỚNG: Khi người dùng bấm vào link lấy key từ trong Game
-// -------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ENDPOINT 1: CHUYỂN HƯỚNG SANG LINK4M (GET /getkey)
+// ----------------------------------------------------------------------------
 app.get('/getkey', async (req, res) => {
     const hwid = req.query.hwid;
     if (!hwid) {
@@ -48,10 +52,8 @@ app.get('/getkey', async (req, res) => {
         const response = await axios.get(`https://link4m.com/api-shorten/v2?api=${LINK4M_TOKEN}&url=${encodeURIComponent(destinationUrl)}`);
         
         if (response.data && response.data.shortenedUrl) {
-            // Đẩy trình duyệt của người chơi sang link vượt nhiệm vụ của Link4M
             res.redirect(response.data.shortenedUrl);
         } else {
-            // Dự phòng nếu Link4M lỗi API thì chuyển thẳng sang trang nhận key luôn
             res.redirect(destinationUrl);
         }
     } catch (error) {
@@ -60,9 +62,9 @@ app.get('/getkey', async (req, res) => {
     }
 });
 
-// -------------------------------------------------------------
-// BƯỚC TẠO KEY: Trang hiển thị key cho người chơi sau khi vượt link
-// -------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ENDPOINT 2: TRANG HIỂN THỊ VÀ CẤP PHÁT KEY (GET /generate-key)
+// ----------------------------------------------------------------------------
 app.get('/generate-key', (req, res) => {
     const { status, hwid } = req.query;
 
@@ -90,7 +92,7 @@ app.get('/generate-key', (req, res) => {
         writeDatabase(db);
     }
 
-    // Giao diện HTML hiển thị Key cực đẹp mắt cho người chơi sao chép
+    // Giao diện HTML trả về cho trình duyệt
     res.send(`
         <!DOCTYPE html>
         <html>
@@ -119,14 +121,14 @@ app.get('/generate-key', (req, res) => {
     `);
 });
 
-// -------------------------------------------------------------
-// API ĐỂ GAME CHECK KEY: Script Roblox sẽ gửi Request lên đây kiểm tra
-// -------------------------------------------------------------
-app.get('/verify-key', (req, res) => {
-    const { hwid, key } = req.query;
+// ----------------------------------------------------------------------------
+// ENDPOINT 3: API XÁC THỰC BẢO MẬT TỪ GAME (POST /api/verify)
+// ----------------------------------------------------------------------------
+app.post('/api/verify', (req, res) => {
+    const { hwid, key } = req.body;
 
     if (!hwid || !key) {
-        return res.json({ status: "error", message: "Missing Parameters" });
+        return res.status(400).json({ success: false, message: "Thiếu dữ liệu xác thực (HWID hoặc Key)!" });
     }
 
     const db = readDatabase();
@@ -136,16 +138,17 @@ app.get('/verify-key', (req, res) => {
     if (db[hwid]) {
         if (db[hwid].key === key) {
             if (db[hwid].expiresAt > currentTime) {
-                return res.json({ status: "success", message: "Key Valid" });
+                return res.status(200).json({ success: true, message: "Xác thực thành công! Đang tải dữ liệu Hub..." });
             } else {
-                return res.json({ status: "expired", message: "Key Expired" });
+                return res.status(200).json({ success: false, message: "Mã Key của bạn đã hết hạn sử dụng (8 tiếng)!" });
             }
         }
     }
     
-    return res.json({ status: "invalid", message: "Key Incorrect" });
+    return res.status(200).json({ success: false, message: "Mã Key không chính xác hoặc không khớp với thiết bị!" });
 });
 
 app.listen(PORT, () => {
-    console.log(`Server đang chạy ổn định tại: http://localhost:${PORT}`);
+    console.log(`[VND SERVER] Đang chạy ổn định tại cổng: ${PORT}`);
+    console.log(`[VND SERVER] Endpoint Check Key sẵn sàng: ${BASE_URL}/api/verify`);
 });
